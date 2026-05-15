@@ -15,7 +15,7 @@ struct VideoForgeApp: App {
             } else {
                 ContentView()
                     .environment(pipelineService)
-                    .frame(minWidth: 750, minHeight: 650)
+                    .frame(minWidth: 1000, minHeight: 800)
                     .task { await pipelineService.refreshAPIModels() }
             }
         }

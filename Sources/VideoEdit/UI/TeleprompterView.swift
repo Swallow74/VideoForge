@@ -5,61 +5,63 @@ struct TeleprompterView: View {
     @State private var timer: Timer? = nil
 
     var body: some View {
-        VStack(spacing: 12) {
-            // Script text
+        VStack(spacing: 16) {
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(service.text)
                         .font(.system(size: CGFloat(service.fontSize)))
                         .foregroundColor(service.textColor)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
+                        .padding(20)
                         .id("text-top")
                 }
                 .background(service.backgroundColor.opacity(service.opacity))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .frame(minHeight: 200, maxHeight: .infinity)
-                .onChange(of: service.scrollOffset) { _, newOffset in
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .frame(minHeight: 250, maxHeight: .infinity)
+                .onChange(of: service.scrollOffset) { _, _ in
                     withAnimation(.linear(duration: 0.1)) {
                         proxy.scrollTo("text-top", anchor: .top)
                     }
                 }
             }
 
-            // Controls
             HStack {
-                Button(service.isPlaying ? "⏸ Pausa" : "▶ Riproduci") {
+                Button(service.isPlaying ? "⏸  Pausa" : "▶  Riproduci") {
                     togglePlayback()
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
 
-                Button("⏹ Stop") {
+                Button("⏹  Stop") {
                     stopPlayback()
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.large)
 
                 Spacer()
 
-                VStack(alignment: .trailing) {
+                VStack(alignment: .trailing, spacing: 4) {
                     Text("Velocità: \(Int(service.speed)) WPM")
-                        .font(.caption)
+                        .font(.body)
                     Slider(value: $service.speed, in: 30...200, step: 5)
-                        .frame(width: 150)
+                        .frame(width: 180)
                 }
             }
 
-            // Style controls
-            HStack {
+            HStack(spacing: 16) {
                 ColorPicker("Testo", selection: $service.textColor)
+                    .controlSize(.large)
                 ColorPicker("Sfondo", selection: $service.backgroundColor)
+                    .controlSize(.large)
+                Spacer()
                 Slider(value: $service.opacity, in: 0.3...1.0)
-                    .frame(width: 100)
-                Text("Opacità: \(Int(service.opacity * 100))%")
-                    .font(.caption)
-                    .frame(width: 70)
+                    .frame(width: 120)
+                Text("\(Int(service.opacity * 100))%")
+                    .font(.body.monospacedDigit())
+                    .frame(width: 48)
             }
         }
-        .padding()
+        .padding(20)
     }
 
     private func togglePlayback() {

@@ -11,61 +11,63 @@ struct SetupView: View {
     let onComplete: () -> Void
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 24) {
             Image(systemName: "wrench.and.screwdriver.fill")
-                .font(.system(size: 48))
+                .font(.system(size: 56))
                 .foregroundStyle(.blue)
 
-            Text("Setup iniziale").font(.title.bold())
+            Text("Setup iniziale").font(.largeTitle.bold())
             Text("Verifica delle dipendenze necessarie per il funzionamento")
-                .font(.subheadline)
+                .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
             if isChecking {
                 ProgressView("Controllo dipendenze...")
+                    .controlSize(.large)
             } else {
                 dependencyList
                 actionButtons
             }
         }
-        .padding(30)
-        .frame(width: 520, height: 520)
+        .padding(40)
+        .frame(width: 640, height: 640)
         .task { await checkDeps() }
     }
 
     private var dependencyList: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             ForEach(deps, id: \.name) { dep in
-                HStack {
+                HStack(spacing: 12) {
                     Image(systemName: dep.installed ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundColor(dep.installed ? .green : (dep.optional ? .orange : .red))
-                        .font(.title3)
-                    VStack(alignment: .leading) {
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Text(dep.name).font(.body.bold())
                             if dep.optional {
-                                Text("(opzionale)").font(.caption).foregroundStyle(.secondary)
+                                Text("(opzionale)").font(.subheadline).foregroundStyle(.secondary)
                             }
                         }
-                        if let v = dep.version { Text(v).font(.caption).foregroundStyle(.secondary) }
+                        if let v = dep.version { Text(v).font(.subheadline).foregroundStyle(.secondary) }
                     }
                     Spacer()
                     if !dep.installed {
                         if installing == dep.name {
-                            ProgressView().scaleEffect(0.7)
+                            ProgressView().scaleEffect(0.8).controlSize(.small)
                         } else if !dep.optional {
                             Button("Installa") { install(dep) }
                                 .buttonStyle(.borderedProminent)
+                                .controlSize(.large)
                                 .disabled(installing != nil)
                         } else {
-                            Text("Skip").font(.caption).foregroundStyle(.secondary)
+                            Text("Skip").font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
                 }
-                .padding(8)
-                .background(Color(white: 0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(12)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             }
         }
     }
