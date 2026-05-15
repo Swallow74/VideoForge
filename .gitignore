@@ -13,3 +13,4 @@ __pycache__/
 *.srt
 *.dmg
 Distribution/VideoForge.dmg
+VideoForge.app/
