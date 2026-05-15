@@ -7,14 +7,14 @@ let swiftSettings: [SwiftSetting] = [
 ]
 
 let package = Package(
-    name: "VideoEdit",
+    name: "VideoForge",
     platforms: [
         .macOS(.v15),
     ],
     products: [
         .library(name: "VideoEditCore", targets: ["VideoEditCore"]),
         .library(name: "MLXWhisper", targets: ["MLXWhisper"]),
-        .executable(name: "VideoEdit", targets: ["VideoEdit"]),
+        .executable(name: "VideoForge", targets: ["VideoForge"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.10.0"),
