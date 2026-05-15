@@ -1,0 +1,4 @@
+openai>=1.0.0
+mlx-whisper>=0.4.0
+silero-vad>=6.0.0
+torchaudio>=2.0.0

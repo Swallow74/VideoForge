@@ -1,0 +1,15 @@
+.DS_Store
+.build/
+*.xcworkspace
+*.xcuserdata
+Pods/
+DerivedData/
+.swiftpm/
+__pycache__/
+*.pyc
+.venv/
+*.wav
+*.mp4
+*.srt
+*.dmg
+Distribution/VideoForge.dmg
