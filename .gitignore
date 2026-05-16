@@ -14,3 +14,5 @@ __pycache__/
 *.dmg
 Distribution/VideoForge.dmg
 VideoForge.app/
+.env
+api_key.txt

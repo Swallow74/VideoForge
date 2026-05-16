@@ -6,131 +6,297 @@ struct ContentView: View {
     @Environment(PipelineService.self) private var pipeline
     @State private var showTeleprompter = false
     @State private var showAdvanced = false
+    @State private var isDropTarget = false
 
     var body: some View {
         VStack(spacing: 0) {
-            headerView.padding(.horizontal).padding(.top, 16)
-            Divider().padding(.vertical, 8)
-
             ScrollView {
-                VStack(spacing: 12) {
-                    filesSection
-                    transcriptionSection
-                    audioCleanupSection
-                    videoSection
-                    advancedSection
-                    progressSection
+                VStack(spacing: 16) {
+                    FilesCard(pipeline: pipeline, isDropTarget: $isDropTarget)
+                    TranscriptionCard(pipeline: pipeline)
+                    ProcessingCard(
+                        pipeline: pipeline,
+                        showAdvanced: $showAdvanced
+                    )
+                    if showAdvanced { AdvancedCard() }
+                    ProgressBar(pipeline: pipeline)
                 }
-                .padding(.horizontal)
+                .padding(20)
             }
 
-            Divider().padding(.vertical, 8)
-            logSection.padding(.horizontal)
+            Divider()
+
+            LogCard(pipeline: pipeline)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
         }
-        .padding(.bottom, 16)
+        .padding(.bottom, 12)
+        .frame(minWidth: 1000, minHeight: 800)
+        .toolbar { toolbarContent }
         .sheet(isPresented: $showTeleprompter) {
             TeleprompterView(service: pipeline.teleprompterService)
-                .frame(minWidth: 600, minHeight: 500)
+                .frame(minWidth: 640, minHeight: 520)
         }
     }
 
-    // MARK: - Header
-
-    private var headerView: some View {
-        HStack {
-            Text("VideoForge").font(.largeTitle.bold())
-                .foregroundStyle(.primary)
-            Spacer()
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup {
             if pipeline.isProcessing {
-                ProgressView().scaleEffect(1.0).padding(.trailing, 6)
-                    .controlSize(.large)
+                ProgressView()
+                    .controlSize(.small)
             }
-            Button("📜 Teleprompter") { showTeleprompter = true }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-            Button(pipeline.isProcessing ? "Stop" : "▶  Avvia") {
-                pipeline.isProcessing ? pipeline.cancel() : pipeline.start()
+
+            Button {
+                showTeleprompter = true
+            } label: {
+                Label("Teleprompter", systemImage: "scroll")
+            }
+            .keyboardShortcut("t", modifiers: .command)
+
+            Button {
+                if pipeline.isProcessing {
+                    pipeline.cancel()
+                } else {
+                    pipeline.start()
+                }
+            } label: {
+                Label(
+                    pipeline.isProcessing ? "Stop" : "Avvia",
+                    systemImage: pipeline.isProcessing ? "stop.fill" : "play.fill"
+                )
             }
             .disabled(pipeline.files.isEmpty && !pipeline.isProcessing)
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .keyboardShortcut(pipeline.isProcessing ? "." : "r", modifiers: .command)
         }
     }
+}
 
-    // MARK: - Files
+// MARK: - Section Header
 
-    private var filesSection: some View {
-        GroupBox("File") {
-            VStack(spacing: 8) {
-                HStack {
-                    Button("＋ Aggiungi file") { pipeline.addFiles() }
-                        .disabled(pipeline.isProcessing)
-                        .controlSize(.large)
-                    Button("✕ Rimuovi tutti") { pipeline.files.removeAll() }
-                        .disabled(pipeline.files.isEmpty)
-                        .controlSize(.large)
-                    Spacer()
-                    Text("\(pipeline.files.count) file").foregroundStyle(.secondary).font(.subheadline)
+private struct SectionHeader: View {
+    let title: String
+    let icon: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(.tint)
+            Text(title)
+                .font(.title3.weight(.semibold))
+        }
+    }
+}
+
+// MARK: - Files Card
+
+private struct FilesCard: View {
+    let pipeline: PipelineService
+    @Binding var isDropTarget: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "File", icon: "folder")
+
+            HStack(spacing: 10) {
+                Button {
+                    pipeline.addFiles()
+                } label: {
+                    Label("Aggiungi file", systemImage: "plus")
                 }
-                List(Array(pipeline.files.enumerated()), id: \.offset) { i, file in
-                    HStack {
-                        Image(systemName: AudioService.isAudioFile(file) ? "waveform" : "film")
-                            .foregroundStyle(.secondary)
-                            .font(.title3)
-                        Text(file.lastPathComponent)
-                            .lineLimit(1)
-                            .font(.body)
-                        Spacer()
-                    }
-                    .swipeActions { Button("Rimuovi", role: .destructive) { pipeline.files.remove(at: i) } }
+                .disabled(pipeline.isProcessing)
+                .controlSize(.large)
+
+                Button {
+                    pipeline.files.removeAll()
+                } label: {
+                    Label("Rimuovi tutti", systemImage: "trash")
                 }
-                .listStyle(.bordered(alternatesRowBackgrounds: true))
-                .frame(minHeight: 100)
+                .disabled(pipeline.files.isEmpty || pipeline.isProcessing)
+                .controlSize(.large)
+                .tint(.secondary)
+
+                Spacer()
+
+                Text("\(pipeline.files.count) file")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            if pipeline.files.isEmpty {
+                emptyDropZone
+            } else {
+                fileList
             }
         }
+        .padding(20)
+        .background(.fill.quinary)
+        .clipShape(.rect(cornerRadius: 14))
+        .overlay {
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(.tint, lineWidth: 2)
+            } else {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(.separator, lineWidth: 0.5)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isDropTarget)
+        .onDrop(of: [.fileURL], isTargeted: $isDropTarget, perform: handleDrop)
     }
 
-    // MARK: - Transcription
+    private var emptyDropZone: some View {
+        HStack {
+            Spacer()
+            VStack(spacing: 8) {
+                Image(systemName: "plus.rectangle.on.rectangle")
+                    .font(.largeTitle)
+                    .foregroundStyle(.tertiary)
+                Text("Aggiungi file video o audio")
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+                if isDropTarget {
+                    Text("Rilascia per aggiungere")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.tint)
+                        .transition(.opacity)
+                } else {
+                    Text("Oppure trascina i file qui")
+                        .font(.caption)
+                        .foregroundStyle(.quaternary)
+                        .transition(.opacity)
+                }
+            }
+            .padding(.vertical, 24)
+            .animation(.easeInOut(duration: 0.2), value: isDropTarget)
+            Spacer()
+        }
+    }
 
-    private var transcriptionSection: some View {
-        GroupBox("Trascrizione") {
+    private var fileList: some View {
+        List(Array(pipeline.files.enumerated()), id: \.offset) { i, file in
+            HStack(spacing: 10) {
+                Image(systemName: AudioService.isAudioFile(file) ? "waveform" : "film")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                Text(file.lastPathComponent)
+                    .lineLimit(1)
+                    .font(.body)
+                Spacer()
+            }
+            .swipeActions {
+                Button("Rimuovi", role: .destructive) {
+                    pipeline.files.remove(at: i)
+                }
+            }
+        }
+        .listStyle(.bordered(alternatesRowBackgrounds: true))
+        .frame(minHeight: 80)
+        .clipShape(.rect(cornerRadius: 8))
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !pipeline.isProcessing else { return false }
+        for provider in providers {
+            _ = provider.loadObject(ofClass: NSURL.self) { item, _ in
+                if let url = (item as? NSURL)?.absoluteURL {
+                    Task { @MainActor in
+                        if !pipeline.files.contains(url) {
+                            pipeline.files.append(url)
+                        }
+                    }
+                }
+            }
+        }
+        return true
+    }
+}
+
+// MARK: - Transcription Card
+
+private struct TranscriptionCard: View {
+    let pipeline: PipelineService
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(title: "Trascrizione", icon: "text.bubble")
+
             VStack(spacing: 12) {
-                HStack {
-                    Text("Modello:").frame(width: 130, alignment: .leading).font(.body)
+                HStack(spacing: 16) {
+                    Label("Modello", systemImage: "cpu")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 100, alignment: .leading)
                     Picker("", selection: Bindable(pipeline).asrModel) {
                         ForEach(PipelineService.availableModels, id: \.self) { Text($0).tag($0) }
-                    }.labelsHidden().frame(width: 180)
-                        .controlSize(.large)
-                    Text("Lingua:").frame(width: 60).font(.body)
+                    }
+                    .labelsHidden()
+                    .frame(width: 180)
+                    .controlSize(.large)
+
+                    Spacer()
+
+                    Label("Lingua", systemImage: "textformat")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 60, alignment: .leading)
                     Picker("", selection: Bindable(pipeline).language) {
                         ForEach(["it", "en", "fr", "de", "es", "pt", "ja", "zh", "auto"], id: \.self) { Text($0.uppercased()).tag($0) }
-                    }.labelsHidden().frame(width: 90)
-                        .controlSize(.large)
+                    }
+                    .labelsHidden()
+                    .frame(width: 90)
+                    .controlSize(.large)
                 }
-                HStack {
-                    Text("Correzione:").frame(width: 130, alignment: .leading).font(.body)
+
+                Divider()
+
+                HStack(spacing: 16) {
+                    Label("Correzione", systemImage: "pencil")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 100, alignment: .leading)
                     Picker("", selection: Bindable(pipeline).textModel) {
-                        Text("(nessuno)").tag("")
+                        Text("Nessuna").tag("")
                         ForEach(pipeline.availableTextModels, id: \.self) { Text($0).tag($0) }
-                    }.labelsHidden().frame(width: 240)
-                        .controlSize(.large)
-                    Text("Profilo:").frame(width: 60).font(.body)
+                    }
+                    .labelsHidden()
+                    .frame(width: 240)
+                    .controlSize(.large)
+
+                    Spacer()
+
+                    Label("Profilo", systemImage: "person")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 60, alignment: .leading)
                     Picker("", selection: Bindable(pipeline).profileName) {
                         Text("Auto").tag("auto")
                         Text("Conversational").tag(ProfileName.conversational.rawValue)
                         Text("Lecturing").tag(ProfileName.lecturing.rawValue)
                         Text("Technical").tag(ProfileName.technical.rawValue)
-                    }.labelsHidden().frame(width: 160)
-                        .controlSize(.large)
+                    }
+                    .labelsHidden()
+                    .frame(width: 160)
+                    .controlSize(.large)
                 }
-                HStack {
-                    Text("API URL:").frame(width: 130, alignment: .leading).font(.body)
+
+                Divider()
+
+                HStack(spacing: 16) {
+                    Label("API URL", systemImage: "link")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 100, alignment: .leading)
                     TextField("http://127.0.0.1:8000", text: Bindable(pipeline).apiBaseURL)
                         .textFieldStyle(.roundedBorder)
                         .font(.body)
-                        .frame(width: 360)
-                    Button("↻") {
+                    Button {
                         Task { await pipeline.refreshAPIModels() }
+                    } label: {
+                        Label("Aggiorna", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
@@ -138,175 +304,381 @@ struct ContentView: View {
                 }
             }
         }
+        .padding(20)
+        .background(.fill.quinary)
+        .clipShape(.rect(cornerRadius: 14))
     }
+}
 
-    // MARK: - Audio Cleanup
+// MARK: - Processing Card
 
-    private var audioCleanupSection: some View {
-        GroupBox("Pulizia Audio") {
+private struct ProcessingCard: View {
+    let pipeline: PipelineService
+    @Binding var showAdvanced: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Elaborazione", icon: "slider.horizontal.3")
+
             VStack(spacing: 12) {
                 Toggle(isOn: Bindable(pipeline).enableSilenceRemoval) {
-                    Text("Rimuovi silenzi").font(.body)
+                    Label("Rimuovi silenzi", systemImage: "waveform.path.ecg")
+                        .font(.body)
                 }
+                .toggleStyle(.switch)
                 if pipeline.enableSilenceRemoval {
-                    HStack {
-                        Text("Soglia silenzio:").frame(width: 140, alignment: .leading).font(.body)
-                        Slider(value: Bindable(pipeline).silenceThreshold, in: -50...(-10), step: 5)
-                        Text("\(Int(pipeline.silenceThreshold)) dB").frame(width: 60).font(.body.monospacedDigit())
-                    }
-                    HStack {
-                        Text("Durata min:").frame(width: 140, alignment: .leading).font(.body)
-                        Slider(value: Bindable(pipeline).minSilenceDuration, in: 0.1...2.0, step: 0.1)
-                        Text("\(pipeline.minSilenceDuration, specifier: "%.1f") s").frame(width: 60).font(.body.monospacedDigit())
-                    }
+                    silenceSettings
                 }
 
                 Toggle(isOn: Bindable(pipeline).enableNoiseRemoval) {
-                    Text("Rimuovi rumore fondo").font(.body)
+                    Label("Rimuovi rumore fondo", systemImage: "speaker.wave.2")
+                        .font(.body)
                 }
+                .toggleStyle(.switch)
                 if pipeline.enableNoiseRemoval {
-                    HStack {
-                        Text("Forza riduzione:").frame(width: 140, alignment: .leading).font(.body)
-                        Slider(value: Bindable(pipeline).noiseStrength, in: 0.1...1.0, step: 0.1)
-                        Text("\(pipeline.noiseStrength, specifier: "%.1f")").frame(width: 60).font(.body.monospacedDigit())
-                    }
+                    noiseSettings
                 }
-            }
-        }
-    }
 
-    // MARK: - Video
-
-    private var videoSection: some View {
-        GroupBox("Video") {
-            VStack(spacing: 12) {
                 Toggle(isOn: Bindable(pipeline).enablePortraitBox) {
-                    Text("Portrait Box (9:16)").font(.body)
+                    Label("Portrait Box 9:16", systemImage: "rectangle.ratio.9.to.16")
+                        .font(.body)
                 }
+                .toggleStyle(.switch)
                 if pipeline.enablePortraitBox {
-                    HStack {
-                        Text("Ritaglio:").frame(width: 100, alignment: .leading).font(.body)
-                        Picker("", selection: Bindable(pipeline).portraitCropMode) {
-                            ForEach(["Center", "Top", "Bottom", "Smart"], id: \.self) { Text($0).tag($0) }
-                        }.labelsHidden().controlSize(.large)
-                        Toggle("Sfondo sfocato", isOn: Bindable(pipeline).portraitBlurBackground)
-                            .font(.body)
-                    }
+                    portraitSettings
                 }
 
                 Toggle(isOn: Bindable(pipeline).enableOverlay) {
-                    Text("Overlay (PIP)").font(.body)
+                    Label("Overlay PIP", systemImage: "rectangle.on.rectangle")
+                        .font(.body)
                 }
+                .toggleStyle(.switch)
                 if pipeline.enableOverlay {
-                    HStack {
-                        Button("Scegli video overlay") { pipeline.addOverlayVideo() }
-                            .controlSize(.large)
-                        if let ov = pipeline.overlayVideoURL {
-                            Text(ov.lastPathComponent).font(.subheadline)
+                    overlaySettings
+                }
+
+                Toggle(isOn: Bindable(pipeline).enableMusicDucking) {
+                    Label("Musica + Auto-Ducking", systemImage: "music.note")
+                        .font(.body)
+                }
+                .toggleStyle(.switch)
+                if pipeline.enableMusicDucking {
+                    musicSettings
+                }
+
+                Toggle(isOn: Bindable(pipeline).enableDualLanguage) {
+                    Label("Sottotitoli bilingue", systemImage: "globe")
+                        .font(.body)
+                }
+                .toggleStyle(.switch)
+                if pipeline.enableDualLanguage {
+                    languageSettings
+                }
+
+                if !pipeline.files.isEmpty {
+                    Divider()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showAdvanced.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: showAdvanced ? "chevron.up" : "chevron.down")
+                                .font(.caption)
+                            Text(showAdvanced ? "Nascondi avanzate" : "Mostra avanzate")
+                                .font(.subheadline)
                         }
                     }
-                    HStack {
-                        Text("Posizione:").frame(width: 100, alignment: .leading).font(.body)
-                        Picker("", selection: Bindable(pipeline).overlayPosition) {
-                            ForEach(["Top Left", "Top Right", "Bottom Left", "Bottom Right"], id: \.self) { Text($0).tag($0) }
-                        }.labelsHidden().controlSize(.large)
-                        Text("Scala:").frame(width: 50).font(.body)
-                        Slider(value: Bindable(pipeline).overlayScale, in: 0.1...0.5)
-                        Text("\(pipeline.overlayScale, specifier: "%.2f")").font(.body.monospacedDigit())
-                            .frame(width: 50)
-                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
+        .padding(20)
+        .background(.fill.quinary)
+        .clipShape(.rect(cornerRadius: 14))
     }
 
-    // MARK: - Advanced
-
-    private var advancedSection: some View {
-        GroupBox {
-            DisclosureGroup("Opzioni avanzate", isExpanded: $showAdvanced) {
-                VStack(spacing: 12) {
-                    Toggle(isOn: Bindable(pipeline).enableMusicDucking) {
-                        Text("🎵 Musica + Auto-Ducking").font(.body)
-                    }
-                    if pipeline.enableMusicDucking {
-                        HStack {
-                            Button("Scegli musica") { pipeline.addMusicFile() }
-                                .controlSize(.large)
-                            if let m = pipeline.musicURL {
-                                Text(m.lastPathComponent).font(.subheadline)
-                            }
-                        }
-                        HStack {
-                            Text("Volume musica:").frame(width: 140, alignment: .leading).font(.body)
-                            Slider(value: Bindable(pipeline).musicVolume, in: 0.0...1.0, step: 0.05)
-                            Text("\(pipeline.musicVolume, specifier: "%.2f")").font(.body.monospacedDigit())
-                                .frame(width: 50)
-                        }
-                        HStack {
-                            Text("Duck livello:").frame(width: 140, alignment: .leading).font(.body)
-                            Slider(value: Bindable(pipeline).duckLevel, in: 0.0...1.0, step: 0.05)
-                            Text("\(pipeline.duckLevel, specifier: "%.2f")").font(.body.monospacedDigit())
-                                .frame(width: 50)
-                        }
-                    }
-
-                    Toggle(isOn: Bindable(pipeline).enableDualLanguage) {
-                        Text("🌐 Sottotitoli bilingue").font(.body)
-                    }
-                    if pipeline.enableDualLanguage {
-                        HStack {
-                            Text("Seconda lingua:").frame(width: 140, alignment: .leading).font(.body)
-                            Picker("", selection: Bindable(pipeline).secondaryLanguage) {
-                                ForEach(["en", "fr", "de", "es", "pt"], id: \.self) { Text($0.uppercased()).tag($0) }
-                            }.labelsHidden().controlSize(.large)
-                            Text("Modello trad.:").frame(width: 110).font(.body)
-                            Picker("", selection: Bindable(pipeline).translationModel) {
-                                Text("(stesso)").tag("")
-                                ForEach(pipeline.availableTextModels, id: \.self) { Text($0).tag($0) }
-                            }.labelsHidden().controlSize(.large)
-                        }
-                    }
-                }
-                .padding(.top, 4)
+    private var silenceSettings: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Text("Soglia")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 80, alignment: .leading)
+                Slider(value: Bindable(pipeline).silenceThreshold, in: -50...(-10), step: 5)
+                Text("\(Int(pipeline.silenceThreshold)) dB")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 56)
             }
+            HStack(spacing: 12) {
+                Text("Durata min")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 80, alignment: .leading)
+                Slider(value: Bindable(pipeline).minSilenceDuration, in: 0.1...2.0, step: 0.1)
+                Text("\(pipeline.minSilenceDuration, specifier: "%.1f") s")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 56)
+            }
+        }
+        .padding(.leading, 28)
+    }
+
+    private var noiseSettings: some View {
+        HStack(spacing: 12) {
+            Text("Forza")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(width: 80, alignment: .leading)
+            Slider(value: Bindable(pipeline).noiseStrength, in: 0.1...1.0, step: 0.1)
+            Text("\(pipeline.noiseStrength, specifier: "%.1f")")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 56)
+        }
+        .padding(.leading, 28)
+    }
+
+    private var portraitSettings: some View {
+        HStack(spacing: 12) {
+            Text("Ritaglio")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(width: 80, alignment: .leading)
+            Picker("", selection: Bindable(pipeline).portraitCropMode) {
+                ForEach(["Center", "Top", "Bottom", "Smart"], id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden()
+            .controlSize(.large)
+            .padding(.leading, 28)
+            Toggle("Sfondo sfocato", isOn: Bindable(pipeline).portraitBlurBackground)
+                .toggleStyle(.switch)
+                .font(.subheadline)
         }
     }
 
-    // MARK: - Progress
+    private var overlaySettings: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Button {
+                    pipeline.addOverlayVideo()
+                } label: {
+                    Label("Scegli video", systemImage: "plus.square")
+                }
+                .controlSize(.large)
+                if let ov = pipeline.overlayVideoURL {
+                    Text(ov.lastPathComponent)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.leading, 28)
 
-    private var progressSection: some View {
+            HStack(spacing: 12) {
+                Text("Posizione:")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 80, alignment: .leading)
+                Picker("", selection: Bindable(pipeline).overlayPosition) {
+                    ForEach(["Top Left", "Top Right", "Bottom Left", "Bottom Right"], id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+                .controlSize(.large)
+                Spacer()
+                Text("Scala:")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Slider(value: Bindable(pipeline).overlayScale, in: 0.1...0.5)
+                    .frame(width: 100)
+                Text("\(pipeline.overlayScale, specifier: "%.2f")")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 40)
+            }
+            .padding(.leading, 28)
+        }
+    }
+
+    private var musicSettings: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Button {
+                    pipeline.addMusicFile()
+                } label: {
+                    Label("Scegli musica", systemImage: "plus.square")
+                }
+                .controlSize(.large)
+                if let m = pipeline.musicURL {
+                    Text(m.lastPathComponent)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.leading, 28)
+
+            HStack(spacing: 12) {
+                    Text("Volume")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Slider(value: Bindable(pipeline).musicVolume, in: 0.0...1.0, step: 0.05)
+                    Text("\(pipeline.musicVolume, specifier: "%.2f")")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 48)
+                }
+                .padding(.leading, 28)
+
+            HStack(spacing: 12) {
+                    Text("Duck")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Slider(value: Bindable(pipeline).duckLevel, in: 0.0...1.0, step: 0.05)
+                    Text("\(pipeline.duckLevel, specifier: "%.2f")")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 48)
+                }
+                .padding(.leading, 28)
+        }
+    }
+
+    private var languageSettings: some View {
+        HStack(spacing: 12) {
+            Text("Seconda lingua:")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .leading)
+            Picker("", selection: Bindable(pipeline).secondaryLanguage) {
+                ForEach(["en", "fr", "de", "es", "pt"], id: \.self) { Text($0.uppercased()).tag($0) }
+            }
+            .labelsHidden()
+            .controlSize(.large)
+            Spacer()
+            Text("Traduzione:")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Picker("", selection: Bindable(pipeline).translationModel) {
+                Text("Stesso modello").tag("")
+                ForEach(pipeline.availableTextModels, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden()
+            .controlSize(.large)
+        }
+        .padding(.leading, 28)
+    }
+}
+
+// MARK: - Advanced Card
+
+private struct AdvancedCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Opzioni avanzate", icon: "gearshape.2")
+
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    Label("Output SRT personalizzato", systemImage: "doc.text")
+                        .font(.body)
+                    Spacer()
+                    Text("In sviluppo")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+
+                HStack(spacing: 12) {
+                    Label("Batch concurrente", systemImage: "square.stack.3d.up")
+                        .font(.body)
+                    Spacer()
+                    Text("In sviluppo")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(20)
+        .background(.fill.quinary)
+        .clipShape(.rect(cornerRadius: 14))
+    }
+}
+
+// MARK: - Progress Bar
+
+private struct ProgressBar: View {
+    let pipeline: PipelineService
+
+    var body: some View {
         VStack(spacing: 6) {
             if !pipeline.statusText.isEmpty {
-                Text(pipeline.statusText).font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                    Text(pipeline.statusText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(Int(pipeline.progress * 100))%")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
             ProgressView(value: pipeline.progress, total: 1.0)
                 .progressViewStyle(.linear)
                 .tint(.accentColor)
-                .scaleEffect(y: 1.5)
         }
     }
+}
 
-    // MARK: - Log
+// MARK: - Log Card
 
-    private var logSection: some View {
-        GroupBox("Log") {
+private struct LogCard: View {
+    let pipeline: PipelineService
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "terminal")
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+                Text("Log")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !pipeline.log.isEmpty {
+                    Button("Pulisci") {
+                        pipeline.log = ""
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                }
+            }
+
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(pipeline.log)
+                    Text(pipeline.log.isEmpty ? "Nessun log disponibile" : pipeline.log)
                         .font(.system(.subheadline, design: .monospaced))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(pipeline.log.isEmpty ? .tertiary : .primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                         .id("log-bottom")
                 }
-                .background(Color(nsColor: .windowBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(minHeight: 120, maxHeight: 200)
+                .padding(12)
+                .background(.fill.quinary)
+                .clipShape(.rect(cornerRadius: 10))
                 .onChange(of: pipeline.log) { _, _ in
-                    withAnimation { proxy.scrollTo("log-bottom", anchor: .bottom) }
+                    withAnimation(.default) {
+                        proxy.scrollTo("log-bottom", anchor: .bottom)
+                    }
                 }
             }
-            .frame(minHeight: 140)
         }
     }
 }
@@ -314,5 +686,5 @@ struct ContentView: View {
 #Preview {
     ContentView()
         .environment(PipelineService())
-        .frame(width: 750, height: 800)
+        .frame(width: 900, height: 900)
 }

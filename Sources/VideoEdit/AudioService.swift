@@ -1,7 +1,19 @@
 import Foundation
 
 public enum AudioService {
-    private static let ffmpeg = Process()
+    private static let ffmpegPaths = [
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/usr/bin/ffmpeg",
+        "\(NSHomeDirectory())/.videoforge/bin/ffmpeg",
+    ]
+
+    private static let ffprobePaths = [
+        "/opt/homebrew/bin/ffprobe",
+        "/usr/local/bin/ffprobe",
+        "/usr/bin/ffprobe",
+        "\(NSHomeDirectory())/.videoforge/bin/ffprobe",
+    ]
 
     public static func isAudioFile(_ url: URL) -> Bool {
         ["mp3", "wav", "m4a", "aac", "ogg", "flac"].contains(url.pathExtension.lowercased())
@@ -20,15 +32,13 @@ public enum AudioService {
             }
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
-        if !FileManager.default.fileExists(atPath: process.executableURL!.path) {
-            process.executableURL = URL(fileURLWithPath: "/usr/local/bin/ffmpeg")
-        }
-        if !FileManager.default.fileExists(atPath: process.executableURL!.path) {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ffmpeg")
+        guard let ffmpeg = firstExecutable(at: ffmpegPaths) else {
+            throw NSError(domain: "AudioService", code: 1,
+                         userInfo: [NSLocalizedDescriptionKey: "ffmpeg non trovato. Installalo con: brew install ffmpeg"])
         }
 
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffmpeg)
         process.arguments = [
             "-y", "-i", videoURL.path,
             "-vn", "-acodec", "pcm_s16le",
@@ -36,9 +46,7 @@ public enum AudioService {
             outputURL.path
         ]
 
-        let outputPipe = Pipe()
         let errorPipe = Pipe()
-        process.standardOutput = outputPipe
         process.standardError = errorPipe
 
         try process.run()
@@ -54,15 +62,10 @@ public enum AudioService {
     }
 
     public static func getDuration(_ url: URL) -> Double {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffprobe")
-        if !FileManager.default.fileExists(atPath: process.executableURL!.path) {
-            process.executableURL = URL(fileURLWithPath: "/usr/local/bin/ffprobe")
-        }
-        if !FileManager.default.fileExists(atPath: process.executableURL!.path) {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ffprobe")
-        }
+        guard let ffprobe = firstExecutable(at: ffprobePaths) else { return 0 }
 
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: ffprobe)
         process.arguments = ["-v", "quiet", "-print_format", "json", "-show_format", url.path]
 
         let outputPipe = Pipe()
@@ -79,5 +82,16 @@ public enum AudioService {
             return 0
         }
         return duration
+    }
+
+    // MARK: - Helpers
+
+    private static func firstExecutable(at paths: [String]) -> String? {
+        for path in paths {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
     }
 }

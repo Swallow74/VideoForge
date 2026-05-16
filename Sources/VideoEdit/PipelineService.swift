@@ -137,131 +137,244 @@ final class PipelineService {
         }
     }
 
+    // MARK: - Steps configuration
+
+    private struct StepWeights {
+        var extraction: Double = 5
+        var silence: Double = 0
+        var noise: Double = 0
+        var transcription: Double = 40
+        var profile: Double = 2
+        var merge: Double = 3
+        var grammar: Double = 0
+        var normalize: Double = 5
+        var export: Double = 2
+        var dualLanguage: Double = 0
+        var portrait: Double = 0
+        var music: Double = 0
+        var overlay: Double = 0
+        var cleanup: Double = 3
+
+        var total: Double {
+            extraction + silence + noise + transcription + profile + merge
+            + grammar + normalize + export + dualLanguage + portrait + music + overlay + cleanup
+        }
+    }
+
+    private func computeWeights() -> StepWeights {
+        StepWeights(
+            silence: enableSilenceRemoval ? 5 : 0,
+            noise: enableNoiseRemoval ? 5 : 0,
+            grammar: !textModel.isEmpty ? 10 : 0,
+            dualLanguage: enableDualLanguage ? 8 : 0,
+            portrait: enablePortraitBox ? 8 : 0,
+            music: enableMusicDucking ? 5 : 0,
+            overlay: enableOverlay ? 5 : 0
+        )
+    }
+
+    private var stepNumber = 0
+    private var totalSteps = 0
+
+    private func beginSteps(_ w: StepWeights) {
+        stepNumber = 0
+        totalSteps = 0
+        if w.extraction > 0 { totalSteps += 1 }
+        if w.silence > 0 { totalSteps += 1 }
+        if w.noise > 0 { totalSteps += 1 }
+        totalSteps += 1 // transcription
+        if w.profile > 0 { totalSteps += 1 }
+        if w.merge > 0 { totalSteps += 1 }
+        if w.grammar > 0 { totalSteps += 1 }
+        if w.normalize > 0 { totalSteps += 1 }
+        if w.export > 0 { totalSteps += 1 }
+        if w.dualLanguage > 0 { totalSteps += 1 }
+        if w.portrait > 0 { totalSteps += 1 }
+        if w.music > 0 { totalSteps += 1 }
+        if w.overlay > 0 { totalSteps += 1 }
+    }
+
+    private func advanceStep(_ w: StepWeights, _ current: inout Double, label: String) {
+        stepNumber += 1
+        current += w.total > 0 ? (100.0 / w.total) : 0
+        let pct = min(current / 100.0, 0.99)
+        progress = pct
+        statusText = "[\(stepNumber)/\(totalSteps)] \(label)"
+    }
+
     // MARK: - Core Pipeline
 
     private func processFile(_ file: URL) async {
-        appendLog("\n==================================================")
-        appendLog("File: \(file.lastPathComponent)")
+        let w = computeWeights()
+        beginSteps(w)
+        var pct: Double = 0
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm:ss"
+
+        func ts() -> String { fmt.string(from: Date()) }
+        func log(_ msg: String) { appendLog("[\(ts())] \(msg)") }
+        func step(_ label: String) { advanceStep(w, &pct, label: label) }
+
+        log("═══════════════════════════════════════════")
+        log("File: \(file.lastPathComponent)")
+        log("Modelli: Whisper=\(asrModel)  Correzione=\(textModel.isEmpty ? "nessuna" : textModel)")
+        log("Opzioni: \(describeOptions())")
 
         // Step 0: Extract audio
         let audioURL: URL
         if AudioService.isAudioFile(file) {
+            step("Analisi file audio")
             audioURL = file
+            log("File audio riconosciuto")
         } else {
+            step("Estrazione audio")
             let cacheURL = file.deletingPathExtension().appendingPathExtension("_audio.wav")
             if FileManager.default.fileExists(atPath: cacheURL.path) {
-                appendLog("Cache audio trovata")
+                log("Cache audio trovata → uso \(cacheURL.lastPathComponent)")
                 audioURL = cacheURL
             } else {
-                appendLog("Estrazione audio...")
-                updateProgress(0, text: "Estrazione audio...")
-                do { audioURL = try AudioService.extractAudio(from: file) }
-                catch { appendLog("ERRORE: \(error.localizedDescription)"); return }
+                log("Estrazione traccia audio con ffmpeg...")
+                do {
+                    audioURL = try AudioService.extractAudio(from: file)
+                    log("✓ Audio estratto: \(audioURL.lastPathComponent)")
+                } catch {
+                    log("✗ ERRORE estrazione audio: \(error.localizedDescription)")
+                    log("  → Verifica che ffmpeg sia installato")
+                    return
+                }
             }
         }
 
         let duration = AudioService.getDuration(audioURL)
-        appendLog(String(format: "Durata: %.1fs", duration))
+        log("Durata: \(String(format: "%.1f", duration))s (\(String(format: "%.1f", duration/60)) min)")
 
-        // Step 1: Silence Removal (pre-process audio)
+        // Silence Removal
         var processedAudioURL = audioURL
         if enableSilenceRemoval {
-            appendLog("Rimozione silenzi...")
-            updateProgress(0.05, text: "Rimozione silenzi...")
+            step("Rimozione silenzi")
+            log("Soglia: \(Int(silenceThreshold)) dB, durata min: \(minSilenceDuration)s")
             let silenceOut = file.deletingPathExtension().appendingPathExtension("_nosilence.wav")
             let settings = SilenceRemovalService.Settings(
                 silenceThreshold: silenceThreshold, minSilenceDuration: minSilenceDuration)
             do {
                 try await SilenceRemovalService.removeSilences(inputURL: audioURL, outputURL: silenceOut, settings: settings)
                 processedAudioURL = silenceOut
-                appendLog("✓ Silenzi rimossi")
+                log("✓ Silenzi rimossi → \(silenceOut.lastPathComponent)")
             } catch {
-                appendLog("⚠ Silence removal fallito: \(error.localizedDescription)")
+                log("⚠ Silence removal fallito: \(error.localizedDescription)")
             }
         }
 
-        // Step 2: Noise Removal
+        // Noise Removal
         if enableNoiseRemoval {
-            appendLog("Rimozione rumore...")
-            updateProgress(0.1, text: "Rimozione rumore...")
+            step("Rimozione rumore")
+            log("Forza riduzione: \(noiseStrength)")
             let noiseOut = processedAudioURL.deletingPathExtension().appendingPathExtension("_denoised.wav")
             let settings = NoiseRemovalService.Settings(strength: noiseStrength)
             do {
                 try await NoiseRemovalService.removeNoise(inputURL: processedAudioURL, outputURL: noiseOut, settings: settings)
                 processedAudioURL = noiseOut
-                appendLog("✓ Rumore rimosso")
+                log("✓ Rumore rimosso → \(noiseOut.lastPathComponent)")
             } catch {
-                appendLog("⚠ Noise removal fallito: \(error.localizedDescription)")
+                log("⚠ Noise removal fallito: \(error.localizedDescription)")
             }
         }
 
-        // Step 3: Transcribe
-        appendLog("Trascrizione con Whisper \(asrModel)...")
-        updateProgress(0.2, text: "Trascrizione...")
+        // Venv setup
+        if !FileManager.default.isExecutableFile(atPath: DependencyService.venvPython) {
+            step("Setup ambiente Python")
+            log("Creazione ambiente virtuale con mlx-whisper...")
+            do {
+                try await DependencyService.setupVenv()
+                log("✓ Ambiente Python pronto: ~/.videoforge/venv")
+            } catch {
+                log("✗ ERRORE setup Python: \(error.localizedDescription)")
+                return
+            }
+        } else {
+            let ok = (try? await DependencyService.ensureVenvReady()) != nil
+            if !ok {
+                log("✗ ERRORE: mlx-whisper non disponibile nel venv")
+                return
+            }
+        }
+
+        // Transcribe
+        step("Trascrizione (\(asrModel))")
+        log("Caricamento modello Whisper \(asrModel)...")
         let segments: [Segment]
         do {
             segments = try await TranscriptionService.transcribe(audioURL: processedAudioURL, modelSize: asrModel, language: language)
         } catch {
-            appendLog("ERRORE: \(error.localizedDescription)")
+            log("✗ ERRORE trascrizione: \(error.localizedDescription)")
             return
         }
 
-        // Cleanup temp audio files
+        // Cleanup temp audio
         if processedAudioURL != audioURL { try? FileManager.default.removeItem(at: processedAudioURL) }
         if audioURL != file && audioURL != processedAudioURL { try? FileManager.default.removeItem(at: audioURL) }
 
-        appendLog("Segmenti: \(segments.count)")
+        log("✓ \(segments.count) segmenti grezzi")
 
-        // Step 4: Detect profile
+        // Detect profile
+        step("Rilevamento profilo")
         let activeProfile: VideoProfile
         if profileName == "auto" {
             activeProfile = ProfileDetector.detectProfile(from: segments)
-            appendLog("Profilo: \(activeProfile.name.rawValue)")
+            log("Profilo rilevato: \(activeProfile.name.rawValue)")
         } else if let p = ProfileName(rawValue: profileName) {
             activeProfile = VideoProfile.named(p)
+            log("Profilo manuale: \(p.rawValue)")
         } else { activeProfile = .conversational }
 
-        // Step 5: Merge
-        updateProgress(0.4, text: "Merge segmenti...")
+        // Merge
+        step("Merge segmenti")
         let merged = MergeService.mergeAndGroup(segments, profile: activeProfile)
-        appendLog("Dopo merge: \(merged.count)")
+        log("Fusione intelligente: \(segments.count) → \(merged.count) segmenti")
 
-        // Step 6: Grammar correction
+        // Grammar correction
         var corrected = merged
         if !textModel.isEmpty {
-            updateProgress(0.5, text: "Correzione grammaticale...")
+            step("Correzione grammaticale")
+            log("Modello: \(textModel)")
             corrected = await grammarService.correctSegments(merged, model: textModel, profile: activeProfile)
+            log("✓ Correzione completata su \(corrected.count) segmenti")
         }
 
-        // Step 7: Normalize + punctuate
-        updateProgress(0.7, text: "Normalizzazione...")
+        // Normalize + punctuate
+        step("Normalizzazione e punteggiatura")
         corrected = correctFragments(corrected, profile: activeProfile)
+        log("✓ Punteggiatura adattiva applicata")
 
-        // Step 8: Export SRT
+        // Export SRT
+        step("Export SRT")
         let srtURL = file.deletingPathExtension().appendingPathExtension("srt")
         do {
             try SRTExporter.exportSRT(corrected, to: srtURL.path)
-            appendLog("✓ SRT: \(srtURL.lastPathComponent)")
-        } catch { appendLog("ERRORE export SRT: \(error.localizedDescription)") }
+            log("✓ SRT salvato: \(srtURL.lastPathComponent)")
+        } catch {
+            log("✗ ERRORE export SRT: \(error.localizedDescription)")
+        }
 
-        // Step 9: Dual Language
+        // Dual Language
         if enableDualLanguage {
-            appendLog("Generazione sottotitoli bilingue...")
-            updateProgress(0.8, text: "Traduzione...")
+            step("Sottotitoli bilingue")
+            log("Seconda lingua: \(secondaryLanguage.uppercased())")
             let translated = await DualLanguageService.translate(segments: corrected, targetLanguage: secondaryLanguage, model: translationModel)
-
             let dualSRT = DualLanguageService.generateDualLanguageSRT(segments: corrected, secondarySegments: translated)
             let dualURL = file.deletingPathExtension().appendingPathExtension("dual.srt")
             do {
                 try dualSRT.write(toFile: dualURL.path, atomically: true, encoding: .utf8)
-                appendLog("✓ Dual SRT: \(dualURL.lastPathComponent)")
-            } catch { appendLog("ERRORE dual SRT: \(error.localizedDescription)") }
+                log("✓ Dual SRT: \(dualURL.lastPathComponent)")
+            } catch {
+                log("✗ ERRORE dual SRT: \(error.localizedDescription)")
+            }
         }
 
-        // Step 10: Portrait Box
+        // Portrait Box
         if enablePortraitBox && !AudioService.isAudioFile(file) {
-            appendLog("Conversione a 9:16...")
-            updateProgress(0.85, text: "Portrait box...")
+            step("Conversione 9:16 (Portrait)")
+            log("Ritaglio: \(portraitCropMode), sfondo sfocato: \(portraitBlurBackground)")
             let portraitURL = file.deletingPathExtension().appendingPathExtension("_portrait.mp4")
             let settings = PortraitBoxService.Settings(
                 outputWidth: portraitWidth, outputHeight: portraitHeight,
@@ -269,39 +382,61 @@ final class PipelineService {
                 blurBackground: portraitBlurBackground)
             do {
                 try await PortraitBoxService.convertToPortrait(inputURL: file, outputURL: portraitURL, settings: settings)
-                appendLog("✓ Portrait: \(portraitURL.lastPathComponent)")
-            } catch { appendLog("⚠ Portrait fallito: \(error.localizedDescription)") }
+                log("✓ Portrait: \(portraitURL.lastPathComponent)")
+            } catch {
+                log("⚠ Portrait fallito: \(error.localizedDescription)")
+            }
         }
 
-        // Step 11: Music + Ducking
+        // Music + Ducking
         if enableMusicDucking, let music = musicURL {
-            appendLog("Aggiunta musica con ducking...")
-            updateProgress(0.9, text: "Musica + ducking...")
+            step("Musica + Auto-Ducking")
+            log("File musica: \(music.lastPathComponent), volume: \(musicVolume), duck: \(duckLevel)")
             let duckURL = file.deletingPathExtension().appendingPathExtension("_music.mp4")
             let settings = MusicDuckingService.Settings(musicVolume: musicVolume, duckLevel: duckLevel)
             do {
                 try await MusicDuckingService.addMusicWithDucking(speechURL: file, musicURL: music, outputURL: duckURL, settings: settings)
-                appendLog("✓ Musica: \(duckURL.lastPathComponent)")
-            } catch { appendLog("⚠ Musica fallita: \(error.localizedDescription)") }
+                log("✓ Musica: \(duckURL.lastPathComponent)")
+            } catch {
+                log("⚠ Musica fallita: \(error.localizedDescription)")
+            }
         }
 
-        // Step 12: Overlay
+        // Overlay
         if enableOverlay, let overlay = overlayVideoURL, !AudioService.isAudioFile(file) {
-            appendLog("Applicazione overlay...")
+            step("Overlay PIP")
+            log("Video overlay: \(overlay.lastPathComponent), posizione: \(overlayPosition), scala: \(overlayScale)")
             let overlayURL = file.deletingPathExtension().appendingPathExtension("_overlay.mp4")
             let settings = OverlayService.Settings(
                 position: OverlayService.Settings.OverlayPosition(rawValue: overlayPosition) ?? .bottomRight,
                 overlayScale: overlayScale)
             do {
                 try await OverlayService.applyOverlay(mainVideoURL: file, overlayVideoURL: overlay, outputURL: overlayURL, settings: settings)
-                appendLog("✓ Overlay: \(overlayURL.lastPathComponent)")
-            } catch { appendLog("⚠ Overlay fallito: \(error.localizedDescription)") }
+                log("✓ Overlay: \(overlayURL.lastPathComponent)")
+            } catch {
+                log("⚠ Overlay fallito: \(error.localizedDescription)")
+            }
         }
 
-        appendLog("✓ Elaborazione completata")
+        log("━  Elaborazione completata  ━")
+        pct = 100
+        progress = 1.0
+        statusText = "✓ Completato: \(file.lastPathComponent)"
     }
 
     // MARK: - Helpers
+
+    private func describeOptions() -> String {
+        var opts: [String] = []
+        if enableSilenceRemoval { opts.append("silence") }
+        if enableNoiseRemoval { opts.append("noise") }
+        if enablePortraitBox { opts.append("portrait") }
+        if enableOverlay { opts.append("overlay") }
+        if enableMusicDucking { opts.append("music") }
+        if enableDualLanguage { opts.append("bilingue") }
+        if !textModel.isEmpty { opts.append("grammar") }
+        return opts.isEmpty ? "nessuna" : opts.joined(separator: ", ")
+    }
 
     private func correctFragments(_ segments: [Segment], profile: VideoProfile) -> [Segment] {
         var result: [Segment] = []
@@ -321,5 +456,4 @@ final class PipelineService {
     }
 
     private func appendLog(_ msg: String) { log += msg + "\n" }
-    private func updateProgress(_ pct: Double, text: String) { progress = pct; statusText = text }
 }

@@ -4,7 +4,11 @@ Outputs JSON to stdout. Accepts --model and --language."""
 
 import argparse
 import json
+import os
 import sys
+
+# Suppress tqdm progress bars on stdout to keep JSON output clean
+os.environ["TQDM_DISABLE"] = "1"
 
 def main():
     parser = argparse.ArgumentParser()

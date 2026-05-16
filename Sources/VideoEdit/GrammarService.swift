@@ -20,11 +20,11 @@ public actor GrammarService {
     Se la frase è già corretta, restituiscila identica.
     """
 
-    public init(baseURL: String = "http://127.0.0.1:8000/v1", apiKey: String = "pippopippo") {
+    public init(baseURL: String = "http://127.0.0.1:8000/v1", apiKey: String? = nil) {
         var urlStr = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         if !urlStr.hasSuffix("/v1") { urlStr += "/v1" }
         self.baseURL = URL(string: urlStr)!
-        self.apiKey = ProcessInfo.processInfo.environment["OMLX_API_KEY"] ?? apiKey
+        self.apiKey = apiKey ?? EnvLoader.load()["API_KEY"] ?? ProcessInfo.processInfo.environment["OMLX_API_KEY"] ?? ""
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         self.session = URLSession(configuration: config)

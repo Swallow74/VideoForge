@@ -15,10 +15,19 @@ struct VideoForgeApp: App {
             } else {
                 ContentView()
                     .environment(pipelineService)
-                    .frame(minWidth: 1000, minHeight: 800)
                     .task { await pipelineService.refreshAPIModels() }
             }
         }
         .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unifiedCompact)
+        .defaultSize(width: 1100, height: 800)
+        .defaultPosition(.center)
+
+        #if os(macOS)
+        Settings {
+            SettingsView()
+                .environment(pipelineService)
+        }
+        #endif
     }
 }

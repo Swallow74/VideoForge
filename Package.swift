@@ -46,7 +46,8 @@ let package = Package(
                 .target(name: "VideoEditCore"),
                 .target(name: "MLXWhisper"),
             ],
-            path: "Sources/VideoEdit"
+            path: "Sources/VideoEdit",
+            resources: [.copy("Resources/transcribe_audio.py")]
         ),
         .testTarget(
             name: "VideoEditCoreTests",
