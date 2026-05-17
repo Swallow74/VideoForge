@@ -15,10 +15,9 @@ impl PipelineService {
         let api_base_url_owned = api_base_url.to_string();
         let api_key_owned = api_key.to_string();
 
-        let (profile, merged) = tokio::task::spawn_blocking(move || {
+        let merged = tokio::task::spawn_blocking(move || {
             let profile = videoforge_core::detect::detect_profile(&segments_owned);
-            let merged = videoforge_core::merge::merge_and_group(&segments_owned, &profile);
-            (profile, merged)
+            videoforge_core::merge::merge_and_group(&segments_owned, &profile)
         })
         .await
         .expect("spawn_blocking for detect/merge failed");
@@ -28,6 +27,6 @@ impl PipelineService {
         }
 
         let grammar = GrammarService::new(&api_base_url_owned, &api_key_owned);
-        grammar.correct_segments(&merged, &text_model_owned, &profile).await
+        grammar.correct_segments(&merged, &text_model_owned).await
     }
 }

@@ -145,15 +145,10 @@ async fn correct_segments(
     model: String,
     api_base_url: String,
     api_key: String,
-    profile: String,
+    _profile: String,
 ) -> Vec<videoforge_core::Segment> {
     let g = GrammarService::new(&api_base_url, &api_key);
-    let p = match profile.as_str() {
-        "lecturing" => videoforge_core::VideoProfile::lecturing(),
-        "technical" => videoforge_core::VideoProfile::technical(),
-        _ => videoforge_core::VideoProfile::conversational(),
-    };
-    g.correct_segments(&segments, &model, &p).await
+    g.correct_segments(&segments, &model).await
 }
 
 #[tauri::command]

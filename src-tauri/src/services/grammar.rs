@@ -1,14 +1,16 @@
-use videoforge_core::{BoundaryContext, VideoProfile, normalize, CorrectionCache};
+use videoforge_core::CorrectionCache;
 
-static SYSTEM_PROMPT: &str = "Sei un correttore ortografico automatico per sottotitoli video italiani. \
-INPUT: una frase breve, possibilmente con errori di battitura, \
-accordo grammaticale o trascrizione automatica. \
-OUTPUT: restituisci SOLO la frase corretta, senza spiegazioni, senza virgolette, \
-senza prefissi come Correzione:, senza aggiungere frasi nuove, \
-senza completare pensieri lasciati volutamente incompleti. \
-NON aggiungere parole a meno che non siano strettamente necessarie per la grammatica. \
-NON togliere parole. NON cambiare il significato. NON punteggiare alla fine. \
-Se la frase è già corretta, restituiscila identica.";
+static SYSTEM_PROMPT: &str = "Sei un correttore ortografico e di punteggiatura per sottotitoli video italiani.
+
+Regole:
+- Correggi errori di battitura, ortografia e accordo grammaticale.
+- Aggiungi la punteggiatura mancante (punti, virgole, punti interrogativi).
+- Se la frase termina, metti un punto. Se è una domanda, metti il punto interrogativo.
+- Capitalizza la prima lettera della frase.
+- Non spezzare le parole. Non dividere frasi. Non togliere pezzi di frase.
+- Non parafrasare e non cambiare lo stile o il registro originale.
+- Se la frase è già corretta e ben punteggiata, restituiscila identica.
+- Restituisci SOLO il testo corretto, senza prefissi, spiegazioni o virgolette.";
 
 pub struct GrammarService {
     base_url: String,
@@ -63,25 +65,8 @@ impl GrammarService {
         &self,
         segments: &[videoforge_core::Segment],
         model: &str,
-        profile: &VideoProfile,
     ) -> Vec<videoforge_core::Segment> {
-        let mut result = Vec::new();
-        let batch_size = 5;
-
-        for chunk in segments.chunks(batch_size) {
-            let corrected = self.correct_batch(chunk, model).await;
-            result.extend(corrected);
-        }
-
-        let ctx = BoundaryContext::default();
-        for seg in result.iter_mut() {
-            // fix_punct_local su ogni segmento
-            let next_text = String::new(); // semplificato, in produzione è più complesso
-            let fixed = normalize::fix_punct_local(&seg.text, &next_text, 1.0, profile, Some(&ctx));
-            seg.text = fixed;
-        }
-
-        result
+        self.correct_batch(segments, model).await
     }
 
     async fn correct_batch(&self, segments: &[videoforge_core::Segment], model: &str) -> Vec<videoforge_core::Segment> {
@@ -89,19 +74,16 @@ impl GrammarService {
 
         for i in 0..result.len() {
             let text = result[i].text.clone();
-            if !normalize::needs_qwen(&text) {
-                result[i].text = normalize::normalize_text(&text);
-                continue;
-            }
 
-            // Check cache
             if let Some(cached) = self.cache.get(&text) {
                 result[i].text = cached;
                 continue;
             }
 
-            // Chiamata API
-            if let Some(corrected) = self.correct_text(&text, model).await {
+            let prev = if i > 0 { &result[i - 1].text } else { "" };
+            let next = result.get(i + 1).map(|s| s.text.as_str()).unwrap_or("");
+
+            if let Some(corrected) = self.correct_text_with_context(&text, prev, next, model).await {
                 let validated = validate_output(&corrected, &text);
                 if !validated.is_empty() {
                     self.cache.set(&text, &validated);
@@ -113,18 +95,30 @@ impl GrammarService {
         result
     }
 
-    async fn correct_text(&self, text: &str, model: &str) -> Option<String> {
+    async fn correct_text_with_context(&self, text: &str, prev: &str, next: &str, model: &str) -> Option<String> {
         let url = format!("{}/v1/chat/completions", self.base_url);
         let client = reqwest::Client::new();
 
+        let mut messages = vec![
+            serde_json::json!({"role": "system", "content": SYSTEM_PROMPT}),
+        ];
+
+        if !prev.is_empty() {
+            messages.push(serde_json::json!({"role": "user", "content": format!("FRASE PRECEDENTE: {}", prev)}));
+            messages.push(serde_json::json!({"role": "assistant", "content": "OK."}));
+        }
+
+        messages.push(serde_json::json!({"role": "user", "content": format!("CORREGGI: {}", text)}));
+
+        if !next.is_empty() {
+            messages.push(serde_json::json!({"role": "user", "content": format!("(dopo continua con: {})", next)}));
+        }
+
         let body = serde_json::json!({
             "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
-            ],
+            "messages": messages,
             "temperature": 0.0,
-            "max_tokens": text.len() * 3 + 30,
+            "max_tokens": text.len() * 3 + 50,
         });
 
         let resp = client
@@ -143,25 +137,19 @@ impl GrammarService {
 }
 
 fn validate_output(output: &str, original: &str) -> String {
-    let mut stripped = output.trim().to_string();
-    stripped = stripped.trim_matches(|c: char| c == '"' || c == '\'').to_string();
+    let stripped = output.trim()
+        .trim_matches(|c: char| c == '"' || c == '\'')
+        .to_string();
 
     let words_out = stripped.split_whitespace().count();
     let words_in = original.split_whitespace().count();
 
-    if words_out > words_in * 2 {
-        return String::new();
+    if words_out < words_in / 3 || words_out > words_in * 2 {
+        return original.to_string();
     }
 
-    if stripped.contains('\n') || stripped.contains('→')
-        || stripped.contains("Correzione") || stripped.contains("Nota")
-        || stripped.contains("**")
-    {
-        return stripped.lines().next().unwrap_or("").to_string();
-    }
-
-    if stripped.contains(':') && stripped.split_whitespace().count() < 6 {
-        return stripped.split(':').last().unwrap_or("").trim().to_string();
+    if stripped.contains('\n') || stripped.contains("Correzione") || stripped.contains("Nota") || stripped.contains("**") {
+        return original.to_string();
     }
 
     stripped

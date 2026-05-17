@@ -29,7 +29,7 @@ function App() {
   const [_segments, _setSegments] = useState<Segment[] | null>(null);
 
   // Settings
-  const [asrModel, setAsrModel] = useState('large-v3');
+  const [asrModel, setAsrModel] = useState('qwen3-1.7b');
   const [language, setLanguage] = useState('it');
   const [textModel, setTextModel] = useState('');
   const [profileName, setProfileName] = useState('auto');

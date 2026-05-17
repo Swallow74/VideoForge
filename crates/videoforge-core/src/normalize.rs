@@ -89,6 +89,14 @@ pub fn needs_qwen(text: &str) -> bool {
     if re_adjacent.is_match(text) {
         return true;
     }
+    // Need correction if doesn't end with sentence-ending punctuation
+    // (indicates mid-sentence truncation)
+    let trimmed = text.trim();
+    if let Some(last) = trimmed.chars().last() {
+        if !".!?".contains(last) {
+            return true;
+        }
+    }
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.len() >= 3 {
         let unique: std::collections::HashSet<String> =
