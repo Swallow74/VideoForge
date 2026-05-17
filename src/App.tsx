@@ -38,7 +38,7 @@ function App() {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [silence, setSilence] = useState(false);
   const [silenceThreshold, setSilenceThreshold] = useState(-30);
-  const [silenceDuration, setSilenceDuration] = useState(0.5);
+  const [silenceDuration, setSilenceDuration] = useState(0.75);
   const [noise, setNoise] = useState(false);
   const [noiseStrength, setNoiseStrength] = useState(0.5);
   const [portrait, setPortrait] = useState(false);
@@ -54,6 +54,7 @@ function App() {
   const [secondaryLang, setSecondaryLang] = useState('en');
 
   const logRef = useRef<HTMLDivElement>(null);
+  const logEndRef = useRef<HTMLDivElement>(null);
 
   const addLog = useCallback((msg: string) => {
     const ts = new Date().toLocaleTimeString();
@@ -61,8 +62,28 @@ function App() {
   }, []);
 
   useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [log]);
+
+  useEffect(() => {
     const listeners: Array<() => void> = [];
-    addLog('Setup dragdrop listeners...');
+
+    (async () => {
+      try {
+        const u = await listen<string>('log-line', (e) => {
+          addLog(e.payload);
+        });
+        listeners.push(u);
+      } catch (_) { /* ignore */ }
+    })();
+    (async () => {
+      try {
+        const u = await listen<number>('ff-progress', (e) => {
+          setProgress(e.payload);
+        });
+        listeners.push(u);
+      } catch (_) { /* ignore */ }
+    })();
 
     function extractPaths(payload: unknown): string[] {
       if (Array.isArray(payload) && payload.every(p => typeof p === 'string')) return payload;
@@ -73,16 +94,13 @@ function App() {
 
     (async () => {
       const win = getCurrentWindow();
-      // Tauri drag events (win-scoped)
       for (const [evt, handler] of [
-        ['tauri://drag-enter', (paths: string[]) => { setDropOver(true); if (paths.length) addLog(`enter: ${paths.length} file`); }] as const,
+        ['tauri://drag-enter', () => { setDropOver(true); }] as const,
         ['tauri://drag-over', () => setDropOver(true)] as const,
         ['tauri://drag-drop', async (paths: string[]) => {
           setDropOver(false);
-          addLog(`drop: ${paths.length} file`);
           for (const p of paths) await invoke('add_file', { path: p });
           setFiles(await invoke<string[]>('get_files'));
-          addLog(`Drop completato: ${paths.length} file`);
         }] as const,
         ['tauri://drag-leave', () => setDropOver(false)] as const,
       ] as const) {
@@ -96,22 +114,18 @@ function App() {
       }
     })();
 
-    // Custom events from Rust backend (fallback per macOS)
     (async () => {
       try {
-        const u = await listen<string[]>('f-drop-hover', (e) => {
+        const u = await listen<string[]>('f-drop-hover', () => {
           setDropOver(true);
-          if (e.payload.length) addLog(`hover: ${e.payload.length} file`);
         });
         listeners.push(u);
       } catch (_) { /* ignore */ }
       try {
         const u = await listen<string[]>('f-drop', async (e) => {
           setDropOver(false);
-          addLog(`drop: ${e.payload.length} file`);
           for (const p of e.payload) await invoke('add_file', { path: p });
           setFiles(await invoke<string[]>('get_files'));
-          addLog(`Drop completato: ${e.payload.length} file`);
         });
         listeners.push(u);
       } catch (_) { /* ignore */ }
@@ -121,7 +135,6 @@ function App() {
         });
         listeners.push(u);
       } catch (_) { /* ignore */ }
-      addLog('Dragdrop listeners pronti');
     })();
 
     return () => { listeners.forEach(fn => fn()); };
@@ -224,6 +237,112 @@ function App() {
     setProcessing(false); setActiveOp('');
   };
 
+  const outputPathFor = (inputPath: string, suffix: string): string => {
+    const extRe = /\.(mp4|mov|mkv|avi|mp3|wav|m4a|ogg|flac)$/;
+    return extRe.test(inputPath)
+      ? inputPath.replace(extRe, `_${suffix}.$1`)
+      : `${inputPath}_${suffix}`;
+  };
+
+  const handleCleanAudio = async () => {
+    if (files.length === 0) { addLog('✗ Nessun file selezionato'); return; }
+    setProcessing(true); setProgress(0); setLog([]);
+    setStatusText('Pulizia audio in corso…');
+
+    addLog(`═══════════════════════════════════════════`);
+    addLog(`Pulisci Audio: ${files[0]}`);
+
+    try {
+      setActiveOp('Pulizia audio');
+      addLog(`Rimozione silenzi: ${silence ? `soglia=${silenceThreshold}dB, durata=${silenceDuration}s` : 'no'}`);
+      addLog(`Riduzione rumore: ${noise ? `forza=${noiseStrength}` : 'no'}`);
+
+      const outPath = outputPathFor(files[0], 'clean');
+      await invoke('clean_audio', {
+        inputPath: files[0],
+        outputPath: outPath,
+        params: {
+          remove_silence: silence,
+          silence_threshold: silenceThreshold,
+          silence_duration: silenceDuration,
+          remove_noise: noise,
+          noise_strength: noiseStrength,
+        },
+      });
+
+      setStatusText('Completato!');
+      addLog(`✓ Audio pulito: ${outPath}`);
+      addLog('━ Pulizia audio completata ━');
+    } catch (e) {
+      addLog(`✗ ERRORE: ${e}`);
+    }
+    setProcessing(false);
+    setActiveOp('');
+  };
+
+  const handleVideoProcessing = async () => {
+    if (files.length === 0) { addLog('✗ Nessun file selezionato'); return; }
+    setProcessing(true); setProgress(0); setLog([]);
+    setStatusText('Elaborazione video in corso…');
+
+    addLog(`═══════════════════════════════════════════`);
+    addLog(`Elaborazione Video: ${files[0]}`);
+
+    try {
+      let overlayFilePath: string | null = null;
+      if (overlay) {
+        const sel = await open({
+          multiple: false,
+          filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'avi'] }],
+        });
+        if (!sel) { addLog('✗ Nessun file overlay selezionato, annullato.'); setProcessing(false); return; }
+        overlayFilePath = Array.isArray(sel) ? sel[0] : sel;
+        addLog(`Overlay: ${overlayFilePath}`);
+      }
+
+      let musicFilePath: string | null = null;
+      if (music) {
+        const sel = await open({
+          multiple: false,
+          filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] }],
+        });
+        if (!sel) { addLog('✗ Nessun file musica selezionato, annullato.'); setProcessing(false); return; }
+        musicFilePath = Array.isArray(sel) ? sel[0] : sel;
+        addLog(`Musica: ${musicFilePath}`);
+      }
+
+      setActiveOp('Elaborazione video');
+      addLog(`Portrait: ${portrait ? `${portraitCrop}${portraitBlur ? ' + sfocato' : ''}` : 'no'}`);
+      if (overlayFilePath) addLog(`PIP: ${overlayPos}, scala=${overlayScale}`);
+      if (musicFilePath) addLog(`Musica: volume=${musicVolume}, duck=${musicDuck}`);
+
+      const outPath = outputPathFor(files[0], 'processed');
+      await invoke('process_video', {
+        inputPath: files[0],
+        outputPath: outPath,
+        params: {
+          portrait_crop: portrait,
+          crop_position: portraitCrop,
+          blur_bg: portraitBlur,
+          overlay_path: overlayFilePath,
+          overlay_position: overlayPos,
+          overlay_scale: overlayScale,
+          music_path: musicFilePath,
+          music_volume: musicVolume,
+          music_duck: musicDuck,
+        },
+      });
+
+      setStatusText('Completato!');
+      addLog(`✓ Video elaborato: ${outPath}`);
+      addLog('━ Elaborazione video completata ━');
+    } catch (e) {
+      addLog(`✗ ERRORE: ${e}`);
+    }
+    setProcessing(false);
+    setActiveOp('');
+  };
+
   return (
     <div className="app">
       {/* Header */}
@@ -233,7 +352,7 @@ function App() {
         </svg>
         <h1>VideoForge</h1>
         <div className="header-actions">
-          {processing && <button className="btn btn-danger" onClick={() => setProcessing(false)}>⏹ Stop</button>}
+          {processing && <button className="btn btn-danger" onClick={() => { addLog('⏹ Stop richiesto dall\'utente'); invoke('stop_processing'); }}>⏹ Stop</button>}
         </div>
       </header>
 
@@ -264,30 +383,25 @@ function App() {
               ))}
             </ul>
           )}
-          {files.length > 0 && (
-            <button className="btn btn-primary btn-lg" onClick={runTranscription} disabled={processing}>
-              {processing ? '⏳ Elaborazione in corso...' : `▶  Avvia elaborazione  (${files.length} file)`}
-            </button>
-          )}
         </section>
 
         {/* Launch Pad */}
         <section className="card">
           <div className="card-header"><h2>Launch Pad</h2></div>
           <div className="launch-grid">
-            <button className="launch-tile" disabled={files.length === 0 || processing} onClick={runTranscription}>
+            <button className="launch-tile launch-tile-primary" disabled={files.length === 0 || processing} onClick={runTranscription}>
               <svg className="launch-tile-icon" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               <div><div className="launch-tile-text">Trascrizione</div><div className="launch-tile-sub">{textModel ? '+ Grammatica' : 'Solo SRT'}</div></div>
               <svg className="launch-tile-play" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             </button>
-            <button className="launch-tile" disabled={files.length === 0 || processing || (!silence && !noise)}>
+            <button className="launch-tile" disabled={files.length === 0 || processing || (!silence && !noise)} onClick={handleCleanAudio}>
               <svg className="launch-tile-icon" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
               <div><div className="launch-tile-text">Pulisci Audio</div><div className="launch-tile-sub">Silenzi + Rumore</div></div>
               <svg className="launch-tile-play" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             </button>
-            <button className="launch-tile" disabled={files.length === 0 || processing || (!portrait && !overlay && !music)}>
+            <button className="launch-tile" disabled={files.length === 0 || processing || (!portrait && !overlay && !music)} onClick={handleVideoProcessing}>
               <svg className="launch-tile-icon" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="2" y1="8" x2="22" y2="8"/></svg>
-              <div><div className="launch-tile-text">Video</div><div className="launch-tile-sub">Portrait · Overlay · Musica</div></div>
+              <div><div className="launch-tile-text">Elabora Video</div><div className="launch-tile-sub">Ritaglia · PIP · Musica</div></div>
               <svg className="launch-tile-play" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             </button>
           </div>
@@ -416,7 +530,7 @@ function App() {
           </section>
         </div>
 
-        {/* Progress */}
+        {/* Progress — immediately above log, so scrolling reaches it quickly */}
         {statusText && <div className="progress">
           <div className="progress-header">
             <div className="info">
@@ -437,6 +551,7 @@ function App() {
           </div>
           <div className="log-body" ref={logRef}>
             {log.map((line, i) => <div key={i}>{line}</div>)}
+            <div ref={logEndRef} />
           </div>
         </section>
       </div>

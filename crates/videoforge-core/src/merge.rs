@@ -2,11 +2,43 @@ use crate::profile::VideoProfile;
 use crate::segment::Segment;
 use std::collections::HashSet;
 
+fn word_overlap(a: &str, b: &str) -> f64 {
+    let a_words: Vec<&str> = a.split_whitespace().collect();
+    let b_words: Vec<&str> = b.split_whitespace().collect();
+    if a_words.is_empty() || b_words.is_empty() {
+        return 0.0;
+    }
+    let max_overlap = a_words.len().min(b_words.len());
+    for n in (1..=max_overlap).rev() {
+        let suffix: Vec<String> = a_words[a_words.len() - n..].iter().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).collect();
+        let prefix: Vec<String> = b_words[..n].iter().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).collect();
+        if suffix == prefix {
+            return n as f64 / b_words.len() as f64;
+        }
+    }
+    0.0
+}
+
+fn dedup_consecutive(segments: &[Segment]) -> Vec<Segment> {
+    let mut result: Vec<Segment> = Vec::new();
+    for seg in segments {
+        if let Some(last) = result.last() {
+            let overlap = word_overlap(&last.text, &seg.text);
+            if overlap > 0.4 {
+                continue;
+            }
+        }
+        result.push(seg.clone());
+    }
+    result
+}
+
 pub fn merge_and_group(segments: &[Segment], profile: &VideoProfile) -> Vec<Segment> {
+    let deduped = dedup_consecutive(segments);
     let mut grouped: Vec<Segment> = Vec::new();
     let mut buffer: Vec<Segment> = Vec::new();
 
-    for seg in segments {
+    for seg in &deduped {
         if is_loop(&seg.text) {
             continue;
         }

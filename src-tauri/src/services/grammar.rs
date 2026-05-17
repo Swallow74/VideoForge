@@ -65,12 +65,14 @@ impl GrammarService {
         &self,
         segments: &[videoforge_core::Segment],
         model: &str,
+        log: &(dyn Fn(&str) + Send + Sync),
     ) -> Vec<videoforge_core::Segment> {
-        self.correct_batch(segments, model).await
+        self.correct_batch(segments, model, log).await
     }
 
-    async fn correct_batch(&self, segments: &[videoforge_core::Segment], model: &str) -> Vec<videoforge_core::Segment> {
+    async fn correct_batch(&self, segments: &[videoforge_core::Segment], model: &str, log: &(dyn Fn(&str) + Send + Sync)) -> Vec<videoforge_core::Segment> {
         let mut result = segments.to_vec();
+        let total = result.len();
 
         for i in 0..result.len() {
             let text = result[i].text.clone();
@@ -82,6 +84,8 @@ impl GrammarService {
 
             let prev = if i > 0 { &result[i - 1].text } else { "" };
             let next = result.get(i + 1).map(|s| s.text.as_str()).unwrap_or("");
+
+            log(&format!("  [{}/{}] Correzione...", i + 1, total));
 
             if let Some(corrected) = self.correct_text_with_context(&text, prev, next, model).await {
                 let validated = validate_output(&corrected, &text);

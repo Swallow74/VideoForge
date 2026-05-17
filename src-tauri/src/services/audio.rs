@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn find_in_path(name: &str) -> Option<String> {
     std::env::var("PATH").ok().and_then(|path| {
@@ -24,18 +24,25 @@ pub fn is_audio_file(path: &str) -> bool {
 pub fn extract_audio(video_path: &str, output_path: &str) -> Result<String, String> {
     let ffmpeg = find_in_path("ffmpeg").unwrap_or_else(|| "ffmpeg".to_string());
 
-    let status = Command::new(&ffmpeg)
+    let mut child = Command::new(&ffmpeg)
         .args([
             "-y", "-i", video_path,
             "-vn", "-acodec", "pcm_s16le",
             "-ar", "16000", "-ac", "1",
             output_path,
         ])
-        .status()
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
         .map_err(|e| format!("Errore ffmpeg: {e}"))?;
 
+    crate::CURRENT_FFMPEG_PID.store(child.id(), std::sync::atomic::Ordering::SeqCst);
+
+    let status = child.wait().map_err(|e| format!("Errore wait: {e}"))?;
+    crate::CURRENT_FFMPEG_PID.store(0, std::sync::atomic::Ordering::SeqCst);
+
     if !status.success() {
-        return Err("ffmpeg extract failed".into());
+        return Err("Elaborazione interrotta".into());
     }
     Ok(output_path.to_string())
 }

@@ -1,20 +1,31 @@
 pub mod services;
 
 use services::audio;
+use services::audio_clean;
 use services::dependency::DependencyService;
 use services::env::EnvLoader;
 use services::grammar::GrammarService;
 use services::pipeline::PipelineService;
 use services::transcription;
+use services::video;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{DragDropEvent, Emitter, State, WindowEvent};
+
+pub static CURRENT_FFMPEG_PID: AtomicU32 = AtomicU32::new(0);
+
+fn make_logger(app_handle: &tauri::AppHandle) -> Arc<dyn Fn(&str) + Send + Sync> {
+    let handle = app_handle.clone();
+    Arc::new(move |msg: &str| {
+        handle.emit("log-line", msg.to_string()).ok();
+    })
+}
 
 // ── App State ──────────────────────────────────────────
 
 struct AppState {
     files: Mutex<Vec<String>>,
-    log: Mutex<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -91,6 +102,17 @@ fn detect_profile(segments: Vec<videoforge_core::Segment>) -> String {
 // Async commands (I/O-bound: subprocess, HTTP)
 
 #[tauri::command]
+fn stop_processing() {
+    let pid = CURRENT_FFMPEG_PID.swap(0, Ordering::SeqCst);
+    if pid != 0 {
+        let _ = std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+    }
+}
+
+#[tauri::command]
 async fn get_duration(path: String) -> f64 {
     tokio::task::spawn_blocking(move || audio::get_duration(&path))
         .await
@@ -127,13 +149,15 @@ async fn list_models(api_base_url: String, api_key: String) -> Vec<String> {
 
 #[tauri::command]
 async fn transcribe(
+    app_handle: tauri::AppHandle,
     audio_path: String,
     engine: String,
     model: String,
     language: Option<String>,
 ) -> Result<Vec<videoforge_core::Segment>, String> {
+    let log = make_logger(&app_handle);
     tokio::task::spawn_blocking(move || {
-        transcription::transcribe(&audio_path, &engine, &model, language.as_deref())
+        transcription::transcribe(&audio_path, &engine, &model, language.as_deref(), log)
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))?
@@ -141,24 +165,112 @@ async fn transcribe(
 
 #[tauri::command]
 async fn correct_segments(
+    app_handle: tauri::AppHandle,
     segments: Vec<videoforge_core::Segment>,
     model: String,
     api_base_url: String,
     api_key: String,
     _profile: String,
 ) -> Vec<videoforge_core::Segment> {
+    let log = make_logger(&app_handle);
     let g = GrammarService::new(&api_base_url, &api_key);
-    g.correct_segments(&segments, &model).await
+    g.correct_segments(&segments, &model, &*log).await
 }
 
 #[tauri::command]
 async fn process_pipeline(
+    app_handle: tauri::AppHandle,
     segments: Vec<videoforge_core::Segment>,
     text_model: String,
     api_base_url: String,
     api_key: String,
 ) -> Vec<videoforge_core::Segment> {
-    PipelineService::process(&segments, &text_model, &api_base_url, &api_key).await
+    let log = make_logger(&app_handle);
+    PipelineService::process(&segments, &text_model, &api_base_url, &api_key, log).await
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CleanAudioParams {
+    pub remove_silence: bool,
+    pub silence_threshold: f64,
+    pub silence_duration: f64,
+    pub remove_noise: bool,
+    pub noise_strength: f64,
+}
+
+#[tauri::command]
+async fn clean_audio(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    output_path: String,
+    params: CleanAudioParams,
+) -> Result<String, String> {
+    let handle = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let duration = audio::get_duration(&input_path);
+        let progress: audio_clean::ProgressFn = Box::new(move |pct| {
+            handle.emit("ff-progress", pct).ok();
+        });
+        audio_clean::clean_audio(
+            &input_path,
+            &output_path,
+            params.remove_silence,
+            params.silence_threshold,
+            params.silence_duration,
+            params.remove_noise,
+            params.noise_strength,
+            duration,
+            &progress,
+        )
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct VideoProcessParams {
+    pub portrait_crop: bool,
+    pub crop_position: String,
+    pub blur_bg: bool,
+    pub overlay_path: Option<String>,
+    pub overlay_position: String,
+    pub overlay_scale: f64,
+    pub music_path: Option<String>,
+    pub music_volume: f64,
+    pub music_duck: f64,
+}
+
+#[tauri::command]
+async fn process_video(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    output_path: String,
+    params: VideoProcessParams,
+) -> Result<String, String> {
+    let handle = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let duration = audio::get_duration(&input_path);
+        let progress: video::ProgressFn = Box::new(move |pct| {
+            handle.emit("ff-progress", pct).ok();
+        });
+        video::process_video(
+            &input_path,
+            &output_path,
+            params.portrait_crop,
+            &params.crop_position,
+            params.blur_bg,
+            params.overlay_path.as_deref(),
+            &params.overlay_position,
+            params.overlay_scale,
+            params.music_path.as_deref(),
+            params.music_volume,
+            params.music_duck,
+            duration,
+            progress,
+        )
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?
 }
 
 // ── App Entry ──────────────────────────────────────────
@@ -168,7 +280,6 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             files: Mutex::new(Vec::new()),
-            log: Mutex::new(String::new()),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -211,6 +322,9 @@ pub fn run() {
             process_pipeline,
             export_srt,
             detect_profile,
+            clean_audio,
+            process_video,
+            stop_processing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -50,6 +50,7 @@
   color: var(--text); text-align: left; width: 100%;
 }
 .launch-tile:hover { background: var(--accent-light); border-color: var(--accent); }
+.launch-tile-primary { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .launch-tile:disabled { opacity: 0.3; cursor: not-allowed; }
 .launch-tile-icon { width: 24px; height: 24px; }
 .launch-tile-text { font-size: 13px; font-weight: 500; }
@@ -99,6 +100,7 @@
 .progress {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 14px 16px;
+  margin-bottom: 16px;
 }
 .progress-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .progress-header .info { flex: 1; }
